@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Surveyor's Little Helper</title>
+<meta name="theme-color" content="#1f4d3a">
+<meta name="description" content="Find state surveyor's office surveys in and around the section you are standing in.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <div id="where">
+    <div id="secLabel">Loading…</div>
+    <div id="subLabel"></div>
+  </div>
+  <button id="menuBtn" aria-label="Menu" aria-haspopup="true">
+    <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+  </button>
+</header>
+
+<main>
+  <section id="tab-map" class="tab">
+    <div id="mapWrap">
+      <svg id="map" xmlns="http://www.w3.org/2000/svg" aria-label="Section map"></svg>
+      <div id="pickBanner" class="hidden"><span>Tap the map to set your location</span><button id="pickCancel">Cancel</button></div>
+      <button id="recenter" aria-label="Recenter map" title="Recenter">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="currentColor"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4" stroke="currentColor" stroke-width="2"/></svg>
+      </button>
+      <div id="mapInfo" class="hidden">
+        <div><b id="miTitle"></b><div id="miCount"></div></div>
+        <button id="miList">View list</button>
+        <button id="miClose" aria-label="Close">✕</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-list" class="tab hidden">
+    <div id="filters">
+      <label class="f full"><span>Surveyor</span><select id="fLs"></select></label>
+      <label class="f"><span>From</span><input type="date" id="fFrom"></label>
+      <label class="f"><span>To</span><input type="date" id="fTo"></label>
+      <div id="chips"></div>
+      <div id="listBar">
+        <span id="summary"></span>
+        <button id="sortBtn" class="link">Sort: Nearest</button>
+        <button id="clearBtn" class="link">Clear filters</button>
+      </div>
+    </div>
+    <div id="listScroll">
+      <ul id="results"></ul>
+      <button id="moreBtn" class="hidden">Show more</button>
+      <p id="listNote">Survey images come from the Nebraska State Surveyor's Office repository. Unofficial finding aid; see About &amp; disclaimer in the menu.</p>
+    </div>
+  </section>
+</main>
+
+<div id="sliderBar">
+  <div id="sliderLabel">Showing: <b id="radiusText">Current section only</b></div>
+  <div id="sliderRow">
+    <button id="pinBtn" aria-label="Current section only" title="Current section only">
+      <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><path d="M12 2C8.1 2 5 5 5 8.8c0 5.1 7 13.2 7 13.2s7-8.100 7-13.200C19 5 15.900 2 12 2z" fill="currentColor"/><circle cx="12" cy="8.800" r="2.600" fill="#fff"/></svg>
+    </button>
+    <input id="radius" type="range" min="0" max="40" step="1" value="0" aria-label="Search distance">
+    <span id="maxLabel">10 mi</span>
+  </div>
+</div>
+
+<nav id="tabs">
+  <button id="tabMapBtn" class="on">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M9 3 3 5v16l6-2 6 2 6-2V3l-6 2-6-2zM9 3v16M15 5v16" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+    <span>Map</span>
+  </button>
+  <button id="tabListBtn">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3.500 6h.01M3.500 12h.01M3.500 18h.01" stroke="currentColor" stroke-width="2.600" stroke-linecap="round"/></svg>
+    <span>List <b id="listCount"></b></span>
+  </button>
+</nav>
+
+<div id="menu" class="overlay hidden">
+  <div class="panel" role="menu">
+    <button id="mAbout" role="menuitem">About &amp; disclaimer</button>
+    <button id="mPick" role="menuitem">Choose a spot on the map</button>
+    <button id="mGps" role="menuitem" class="hidden">Use my GPS again</button>
+    <div class="soon">Coming next: map / satellite toggle, BLM corners, NGS monuments.</div>
+    <div id="dataInfo"></div>
+  </div>
+</div>
+
+<div id="disclaimer" class="overlay hidden">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="dTitle">
+    <h2 id="dTitle">Before you use this</h2>
+    <p><b>Surveyor's Little Helper</b> is an unofficial finding aid. It is not made by, endorsed by, or connected to the Nebraska State Surveyor's Office.</p>
+    <ul>
+      <li>It helps you find survey records. It is <b>not a survey</b> and cannot establish a boundary, a corner, or a legal description.</li>
+      <li>Section outlines come from state mapping data and are approximate. Phone GPS can be off by many feet.</li>
+      <li>The list may be incomplete or out of date, and a survey can be placed in the wrong section. Always check the official repository and the original records.</li>
+      <li>Survey images belong to the state repository and open from the state's website.</li>
+    </ul>
+    <p class="small">Do not use it alone for legal, boundary, or construction decisions.</p>
+    <button id="dOk" class="primary">I understand</button>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
