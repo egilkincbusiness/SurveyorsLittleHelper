@@ -15,6 +15,7 @@
 
 <header>
   <div id="where">
+    <div id="areaLabel"></div>
     <div id="secLabel">Loading…</div>
     <div id="subLabel"></div>
   </div>
@@ -28,12 +29,15 @@
     <div id="mapWrap">
       <svg id="map" xmlns="http://www.w3.org/2000/svg" aria-label="Section map"></svg>
       <div id="pickBanner" class="hidden"><span>Tap the map to set your location</span><button id="pickCancel">Cancel</button></div>
+      <div id="attrib" class="hidden">Imagery: USGS The National Map (USDA NAIP)</div>
       <button id="recenter" aria-label="Recenter map" title="Recenter">
         <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="currentColor"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4" stroke="currentColor" stroke-width="2"/></svg>
       </button>
       <div id="mapInfo" class="hidden">
-        <div><b id="miTitle"></b><div id="miCount"></div></div>
+        <div><b id="miTitle"></b><div id="miCount"></div><div id="miExtra" class="hidden"></div></div>
         <button id="miList">View list</button>
+        <a id="miSheet" class="mibtn hidden" target="_blank" rel="noopener noreferrer">Datasheet</a>
+        <a id="miNav" class="mibtn hidden" target="_blank" rel="noopener noreferrer">Navigate</a>
         <button id="miClose" aria-label="Close">✕</button>
       </div>
     </div>
@@ -65,7 +69,7 @@
     <button id="pinBtn" aria-label="Current section only" title="Current section only">
       <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><path d="M12 2C8.1 2 5 5 5 8.8c0 5.1 7 13.2 7 13.2s7-8.100 7-13.200C19 5 15.900 2 12 2z" fill="currentColor"/><circle cx="12" cy="8.800" r="2.600" fill="#fff"/></svg>
     </button>
-    <input id="radius" type="range" min="0" max="40" step="1" value="0" aria-label="Search distance">
+    <input id="radius" type="range" min="0" max="20" step="1" value="0" aria-label="Search distance">
     <span id="maxLabel">10 mi</span>
   </div>
 </div>
@@ -83,10 +87,19 @@
 
 <div id="menu" class="overlay hidden">
   <div class="panel" role="menu">
-    <button id="mAbout" role="menuitem">About &amp; disclaimer</button>
+    <div class="mhead">Map</div>
+    <label class="mrow"><input type="radio" name="bm" value="map"><span>Map (section blocks)</span></label>
+    <label class="mrow"><input type="radio" name="bm" value="sat"><span>Satellite</span></label>
+    <div class="mhead">Layers</div>
+    <label class="mrow"><input type="checkbox" id="lyNgs"><span>NGS monuments</span></label>
+    <div id="ngsNote" class="note hidden"></div>
+    <label class="mrow dis"><input type="checkbox" disabled><span>BLM corners <small>coming soon</small></span></label>
+    <div class="mhead">Search</div>
+    <label class="mrow"><input type="checkbox" id="optCenter"><span>Search from map center<small>Your search follows the crosshair while you move the map, instead of your GPS spot.</small></span></label>
     <button id="mPick" role="menuitem">Choose a spot on the map</button>
     <button id="mGps" role="menuitem" class="hidden">Use my GPS again</button>
-    <div class="soon">Coming next: map / satellite toggle, BLM corners, NGS monuments.</div>
+    <div class="mhead"></div>
+    <button id="mAbout" role="menuitem">About &amp; disclaimer</button>
     <div id="dataInfo"></div>
   </div>
 </div>
@@ -99,6 +112,7 @@
       <li>It helps you find survey records. It is <b>not a survey</b> and cannot establish a boundary, a corner, or a legal description.</li>
       <li>Section outlines come from state mapping data and are approximate. Phone GPS can be off by many feet.</li>
       <li>The list may be incomplete or out of date, and a survey can be placed in the wrong section. Always check the official repository and the original records.</li>
+      <li>Monument (NGS) positions come from federal records and may be out of date. A mark may be disturbed or destroyed. Never rely on one without finding and checking it.</li>
       <li>Survey images belong to the state repository and open from the state's website.</li>
     </ul>
     <p class="small">Do not use it alone for legal, boundary, or construction decisions.</p>

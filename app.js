@@ -21,8 +21,13 @@ const state = {
   selected: null,       // section key tapped on the map
   gpsMsg: '',
   ready: false,
+  gps: null,            // latest real GPS fix, kept even when searching from the map center
+  center: false,        // search from map center instead of GPS
+  basemap: store('slhBase') === 'sat' ? 'sat' : 'map',
+  ngs: store('slhNgs') === '1',
+  selMark: null,
 };
-const D = { sections: [], byKey: new Map(), surveys: [], bySec: new Map(), roster: {}, meta: {} };
+const D = { sections: [], byKey: new Map(), surveys: [], bySec: new Map(), roster: {}, meta: {}, townships: [], marks: null };
 let V = null;           // last computed view
 let watchId = null;
 
@@ -33,10 +38,13 @@ const secLabel = s => `S${s.sec}-T${s.twp}N-R${s.rge}${s.dir}`;
 const trLabel = (twp, rge, dir) => `T${+twp}N R${+rge}${dir}`;
 function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } }
 
-function radiusMeters(idx) { return idx * 0.25 * MI; }
+// Slider stops, equal spacing on the slider: current section, then 1/4 mi steps to 2 mi,
+// 1/2 mi steps to 6 mi, and 1 mi steps to 10 mi.
+const RADII = [0, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 7, 8, 9, 10];
+function radiusMeters(idx) { return RADII[idx] * MI; }
 function radiusText(idx) {
   if (idx === 0) return 'Current section only';
-  const mi = idx * 0.25, whole = Math.floor(mi), frac = mi - whole;
+  const mi = RADII[idx], whole = Math.floor(mi), frac = mi - whole;
   const sym = { 0: '', 0.25: '¼', 0.5: '½', 0.75: '¾' }[frac];
   const num = (whole ? whole : '') + sym;
   return `${num} ${mi <= 1 ? 'mile' : 'miles'}`;
@@ -98,11 +106,20 @@ function distToPolys(x, y, pp) {
 /* ---------- data ---------- */
 async function loadData() {
   const get = u => fetch(u, { cache: 'no-cache' }).then(r => { if (!r.ok) throw new Error(u + ' ' + r.status); return r.json(); });
-  const [sec, sur, ros] = await Promise.all([
+  const [sec, sur, ros, twp] = await Promise.all([
     get('data/sections_all.json'), get('data/surveys_all.json'),
     get('data/surveyors.json').catch(() => ({})),
+    get('data/townships.json').catch(() => null),
   ]);
   D.roster = ros || {};
+  for (const f of (twp && twp.features) || []) {
+    const polys = f.type === 'Polygon' ? [f.coords] : f.coords;
+    let a = 1e9, b = 1e9, c = -1e9, d = -1e9;
+    for (const poly of polys) for (const p of poly[0]) {
+      if (p[0] < a) a = p[0]; if (p[0] > c) c = p[0]; if (p[1] < b) b = p[1]; if (p[1] > d) d = p[1];
+    }
+    D.townships.push({ name: f.name.replace(/^(.+) city$/i, 'City of $1'), county: f.county, polys, bbox: [a, b, c, d] });
+  }
   for (const s of sec.sections) {
     const polys = s.type === 'Polygon' ? [s.coords] : s.coords;
     let a = 1e9, b = 1e9, c = -1e9, d = -1e9;
@@ -125,6 +142,24 @@ async function loadData() {
     }
   }
   D.meta = { collected: sur.generatedAt, nSections: D.sections.length, nSurveys: D.surveys.length, unmapped: missing.size };
+}
+
+function townshipAt(lon, lat) {
+  for (const t of D.townships)
+    if (lon >= t.bbox[0] && lon <= t.bbox[2] && lat >= t.bbox[1] && lat <= t.bbox[3] && inPolys(lon, lat, t.polys)) return t.name;
+  return null;
+}
+async function loadNgs() {
+  if (D.marks !== null) return;
+  D.marks = [];
+  try {
+    const r = await fetch('data/ngs.json', { cache: 'no-cache' });
+    if (!r.ok) throw new Error('missing');
+    const j = await r.json();
+    D.marks = j.marks || [];
+    D.ngsFile = true;
+  } catch (e) { D.ngsFile = false; }
+  refresh();
 }
 
 /* ---------- compute what is near, what is in range, which surveys qualify ---------- */
@@ -200,15 +235,22 @@ function compute() {
 function startGPS() {
   stopGPS();
   state.mode = 'gps';
+  startWatch();
+}
+function startWatch() {
+  if (watchId !== null) return;
   if (!('geolocation' in navigator)) { state.gpsMsg = 'This browser has no location support.'; refresh(); return; }
   if (!state.loc) state.gpsMsg = 'Finding you…';
   watchId = navigator.geolocation.watchPosition(onPos, onPosErr,
     { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
 }
 function stopGPS() { if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; } }
+function stopWatchOnly() { stopGPS(); }
 function onPos(p) {
-  if (state.mode !== 'gps') return;
   const n = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy, source: 'gps' };
+  state.gps = n;
+  if (state.mode === 'center') { state.gpsMsg = ''; if (state.ready) renderMap(); return; }
+  if (state.mode !== 'gps') return;
   const o = state.loc;
   let move = true;
   if (o && o.source === 'gps') {
@@ -219,7 +261,7 @@ function onPos(p) {
   if (move) { state.loc = n; state.needFit = true; refresh(); }
 }
 function onPosErr(e) {
-  if (state.loc) return;
+  if (state.loc || state.mode === 'center') return;
   state.gpsMsg = e.code === 1
     ? 'Location is blocked. Allow it for this site, or choose a spot on the map (menu).'
     : 'Could not get your location yet. You can choose a spot on the map (menu).';
@@ -227,10 +269,42 @@ function onPosErr(e) {
 }
 function setManual(lat, lon) {
   stopGPS();
+  state.center = false;
   state.mode = 'manual';
   state.loc = { lat, lon, acc: 0, source: 'manual' };
   state.pickMode = false;
   state.needFit = true;
+  refresh();
+}
+
+/* search from map center */
+function setCenterMode(on) {
+  state.center = on;
+  state.pickMode = false;
+  if (on) {
+    state.mode = 'center';
+    const o = state.loc || state.gps || { lat: CENTER.lat, lon: CENTER.lon };
+    state.loc = { lat: o.lat, lon: o.lon, acc: 0, source: 'center' };
+    startWatch();
+  } else {
+    if (state.gps) { state.mode = 'gps'; state.loc = Object.assign({}, state.gps); }
+    else { state.mode = 'manual'; state.loc = Object.assign({}, state.loc, { source: 'manual' }); startGPS(); state.mode = 'manual'; }
+  }
+  state.selected = null; state.selMark = null; state.shown = PAGE; state.needFit = true;
+  refresh();
+}
+let commitTimer = 0;
+function scheduleCommit() {
+  if (!state.center) return;
+  clearTimeout(commitTimer);
+  commitTimer = setTimeout(() => { if (pts.size) scheduleCommit(); else commitCenter(); }, 220);
+}
+function commitCenter() {
+  if (!state.center || !V || !mapRef) return;
+  const x = view.cx, n = -view.cy;
+  if (Math.hypot(x, n) < 3) return;
+  state.loc = { lat: mapRef.lat0 + n / mapRef.ky, lon: mapRef.lon0 + x / mapRef.kx, acc: 0, source: 'center' };
+  state.shown = PAGE; state.selected = null; state.selMark = null; state.rebase = true;
   refresh();
 }
 
@@ -242,7 +316,8 @@ function refresh() {
 }
 function renderHeader() {
   const L = $('secLabel'), S = $('subLabel');
-  if (!state.loc) { L.textContent = 'No location yet'; S.textContent = state.gpsMsg; return; }
+  const A = $('areaLabel');
+  if (!state.loc) { A.textContent = ''; L.textContent = 'No location yet'; S.textContent = state.gpsMsg; return; }
   if (V.current) {
     L.textContent = secLabel(V.current.s);
   } else {
@@ -251,9 +326,14 @@ function renderHeader() {
     if (near && near.dist < 1000) L.textContent = 'Between sections';
     else L.textContent = 'Outside the data area';
   }
-  const county = V.current ? (V.current.s.dir === 'E' || V.current.s.rge === 1 ? 'Cedar County' : 'Knox County') + ' · ' : '';
-  if (state.loc.source === 'gps') S.textContent = `${county}GPS ±${Math.round(state.loc.acc * FT)} ft`;
-  else S.textContent = `${county}Spot you picked (not GPS)`;
+  if (V.current) {
+    const cedar = V.current.s.dir === 'E' || V.current.s.rge === 1;
+    const tw = townshipAt(state.loc.lon, state.loc.lat);
+    A.textContent = (cedar ? 'Cedar County' : 'Knox County') + (tw ? ' · ' + tw : '');
+  } else A.textContent = '';
+  if (state.loc.source === 'gps') S.textContent = `GPS ±${Math.round(state.loc.acc * FT)} ft`;
+  else if (state.loc.source === 'center') S.textContent = 'Map center (not your location)';
+  else S.textContent = 'Spot you picked (not GPS)';
   if (!V.current) {
     let near = null;
     for (const i of V.near) if (!near || i.dist < near.dist) near = i;
@@ -334,27 +414,89 @@ function renderList() {
   $('moreBtn').textContent = `Show more (${total - shown.length} left)`;
 }
 function renderMenu() {
-  $('mGps').classList.toggle('hidden', state.mode === 'gps');
+  $('mGps').classList.toggle('hidden', state.mode === 'gps' || state.center);
+  $('mPick').classList.toggle('hidden', state.center);
+  $('optCenter').checked = state.center;
+  $('lyNgs').checked = state.ngs;
+  for (const r of document.querySelectorAll('input[name=bm]')) r.checked = r.value === state.basemap;
+  const nn = $('ngsNote');
+  nn.classList.toggle('hidden', !(state.ngs && D.marks !== null && !D.ngsFile));
+  nn.textContent = 'The monument file is not installed yet (data/ngs.json).';
   const m = D.meta;
-  $('dataInfo').innerHTML = `Survey list collected ${esc((m.collected || '').slice(0, 10))}: ${m.nSurveys.toLocaleString()} surveys, ${m.nSections.toLocaleString()} section outlines.` +
+  $('dataInfo').innerHTML = `SLH-v0.6. Survey list collected ${esc((m.collected || '').slice(0, 10))}: ${m.nSurveys.toLocaleString()} surveys, ${m.nSections.toLocaleString()} section outlines.` +
     (m.unmapped ? ` ${m.unmapped} section${m.unmapped > 1 ? 's' : ''} named in surveys could not be placed on the map.` : '');
 }
 
 /* ----- map ----- */
 const svg = $('map');
+const gTiles = document.createElementNS(NS, 'g');
 const gWorld = document.createElementNS(NS, 'g');
 const gLabels = document.createElementNS(NS, 'g');
-svg.append(gWorld, gLabels);
+svg.append(gTiles, gWorld, gLabels);
 const view = { cx: 0, cy: 0, s: 0.05, W: 300, H: 300 };
-let mapRef = null, labelRaf = 0;
+let mapRef = null, labelRaf = 0, markPts = [];
 
 function sizeMap() {
   const r = svg.getBoundingClientRect();
   view.W = r.width || 300; view.H = r.height || 300;
 }
 function applyView() {
-  gWorld.setAttribute('transform', `translate(${view.W / 2 - view.cx * view.s} ${view.H / 2 - view.cy * view.s}) scale(${view.s})`);
-  if (!labelRaf) labelRaf = requestAnimationFrame(() => { labelRaf = 0; drawLabels(); });
+  const t = `translate(${view.W / 2 - view.cx * view.s} ${view.H / 2 - view.cy * view.s}) scale(${view.s})`;
+  gWorld.setAttribute('transform', t);
+  let off = '';
+  if (tileRef && mapRef) off = ` translate(${-(mapRef.lon0 - tileRef.lon0) * tileRef.kx} ${(mapRef.lat0 - tileRef.lat0) * tileRef.ky})`;
+  gTiles.setAttribute('transform', t + off);
+  if (!labelRaf) labelRaf = requestAnimationFrame(() => { labelRaf = 0; drawLabels(); updateTiles(); });
+}
+
+/* satellite tiles (USGS imagery, public domain), placed on the same local meter grid */
+const TILE_URL = (z, x, y) => `https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/${z}/${y}/${x}`;
+let tileRef = null, tileZ = 0, tileCleanup = 0;
+const tileEls = new Map();
+const tx2lon = (x, z) => x / 2 ** z * 360 - 180;
+const ty2lat = (y, z) => Math.atan(Math.sinh(Math.PI * (1 - 2 * y / 2 ** z))) * 180 / Math.PI;
+const lon2tx = (lon, z) => Math.floor((lon + 180) / 360 * 2 ** z);
+const lat2ty = (lat, z) => { const r = lat * Math.PI / 180; return Math.floor((1 - Math.asinh(Math.tan(r)) / Math.PI) / 2 * 2 ** z); };
+function clearTiles() { gTiles.textContent = ''; tileEls.clear(); tileRef = null; }
+function updateTiles() {
+  if (state.basemap !== 'sat' || !mapRef) { if (gTiles.firstChild) clearTiles(); return; }
+  if (tileRef && (Math.abs(mapRef.lat0 - tileRef.lat0) > 0.07 || Math.abs(mapRef.lon0 - tileRef.lon0) > 0.1)) clearTiles();
+  if (!tileRef) tileRef = { lat0: mapRef.lat0, lon0: mapRef.lon0, kx: mapRef.kx, ky: mapRef.ky };
+  const { W, H, s, cx, cy } = view;
+  const lonA = mapRef.lon0 + (cx - W / 2 / s) / mapRef.kx, lonB = mapRef.lon0 + (cx + W / 2 / s) / mapRef.kx;
+  const latA = mapRef.lat0 - (cy + H / 2 / s) / mapRef.ky, latB = mapRef.lat0 - (cy - H / 2 / s) / mapRef.ky;   // south, north
+  let z = Math.min(16, Math.max(8, Math.ceil(Math.log2(156543.03 * Math.cos(mapRef.lat0 * Math.PI / 180) * s))));
+  let x0, x1, y0, y1;
+  for (;; z--) {
+    x0 = lon2tx(lonA, z); x1 = lon2tx(lonB, z); y0 = lat2ty(latB, z); y1 = lat2ty(latA, z);
+    if ((x1 - x0 + 1) * (y1 - y0 + 1) <= 70 || z <= 6) break;
+  }
+  tileZ = z;
+  const want = new Set();
+  for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
+    const k = `${z}/${x}/${y}`; want.add(k);
+    if (tileEls.has(k)) continue;
+    const w = tx2lon(x, z), e = tx2lon(x + 1, z), n = ty2lat(y, z), so = ty2lat(y + 1, z);
+    const im = document.createElementNS(NS, 'image');
+    const px = (w - tileRef.lon0) * tileRef.kx, px2 = (e - tileRef.lon0) * tileRef.kx;
+    const py = -(n - tileRef.lat0) * tileRef.ky, py2 = -(so - tileRef.lat0) * tileRef.ky;
+    im.setAttribute('x', px); im.setAttribute('y', py);
+    im.setAttribute('width', px2 - px + 0.8); im.setAttribute('height', py2 - py + 0.8);
+    im.setAttribute('preserveAspectRatio', 'none');
+    im.setAttribute('href', TILE_URL(z, x, y));
+    im.addEventListener('error', () => { im.remove(); tileEls.delete(k); });
+    gTiles.appendChild(im); tileEls.set(k, im);
+    im.dataset.z = z;
+  }
+  for (const [k, im] of tileEls) if (+im.dataset.z === z && !want.has(k)) { im.remove(); tileEls.delete(k); }
+  clearTimeout(tileCleanup);
+  tileCleanup = setTimeout(() => { for (const [k, im] of tileEls) if (+im.dataset.z !== tileZ) { im.remove(); tileEls.delete(k); } }, 900);
+}
+function applyBasemap() {
+  svg.classList.toggle('sat', state.basemap === 'sat');
+  $('attrib').classList.toggle('hidden', state.basemap !== 'sat');
+  if (state.basemap !== 'sat') clearTiles();
+  applyView();
 }
 function fitView() {
   sizeMap();
@@ -390,16 +532,19 @@ function renderMap() {
     gWorld.appendChild(p);
   }
   if (V.hasLoc) {
-    if (V.R > 0) {
+    if (V.R > 0 && !state.center) {
       const c = document.createElementNS(NS, 'circle');
       c.setAttribute('id', 'ring'); c.setAttribute('r', V.R); gWorld.appendChild(c);
     }
-    if (state.loc.source === 'gps' && state.loc.acc > 4) {
+    if (state.loc.source === 'gps' && state.loc.acc > 4 && !state.center) {
       const a = document.createElementNS(NS, 'circle');
       a.setAttribute('id', 'accCircle'); a.setAttribute('r', Math.min(state.loc.acc, 400)); gWorld.appendChild(a);
     }
   }
   $('pickBanner').classList.toggle('hidden', !state.pickMode);
+  markPts = [];
+  if (state.ngs && D.marks) for (const m of D.marks) { const p = mapRef.fwd(m.lon, m.lat); markPts.push({ m, x: p[0], y: -p[1] }); }
+  if (state.rebase) { state.rebase = false; view.cx = 0; view.cy = 0; }
   if (state.needFit) { state.needFit = false; fitView(); } else { sizeMap(); applyView(); }
   updateMapInfo();
 }
@@ -436,14 +581,66 @@ function drawLabels() {
       t.style.fontWeight = '700'; t.style.fill = '#143325'; gLabels.appendChild(t);
     }
   }
-  if (V.hasLoc) {
+  if (state.ngs && px >= 12) {
+    let n = 0;
+    for (const q of markPts) {
+      const x = sx(q.x), y = sy(q.y);
+      if (x < -12 || y < -12 || x > W + 12 || y > H + 12) continue;
+      if (++n > 600) break;
+      const t = document.createElementNS(NS, 'polygon');
+      t.setAttribute('points', `${x},${y - 9} ${x - 8},${y + 6} ${x + 8},${y + 6}`);
+      t.setAttribute('class', 'mk' + (state.selMark === q.m.pid ? ' sel' : ''));
+      gLabels.appendChild(t);
+    }
+  }
+  if (V.hasLoc && state.center) {
+    if (V.R > 0) {
+      const c = document.createElementNS(NS, 'circle');
+      c.setAttribute('class', 'ring2'); c.setAttribute('cx', W / 2); c.setAttribute('cy', H / 2); c.setAttribute('r', V.R * s);
+      gLabels.appendChild(c);
+    }
+    if (state.gps) {                                   // your real position, as a normal blue dot
+      const p = mapRef.fwd(state.gps.lon, state.gps.lat);
+      const g = document.createElementNS(NS, 'circle');
+      g.setAttribute('class', 'you'); g.setAttribute('cx', sx(p[0])); g.setAttribute('cy', sy(-p[1])); g.setAttribute('r', 8);
+      gLabels.appendChild(g);
+    }
+    const cx0 = W / 2, cy0 = H / 2, a = 8, b = 20;
+    const d = `M${cx0 - b} ${cy0}H${cx0 - a}M${cx0 + a} ${cy0}H${cx0 + b}M${cx0} ${cy0 - b}V${cy0 - a}M${cx0} ${cy0 + a}V${cy0 + b}`;
+    for (const cls of ['xhd', 'xh']) { const pth = document.createElementNS(NS, 'path'); pth.setAttribute('d', d); pth.setAttribute('class', cls); gLabels.appendChild(pth); }
+  } else if (V.hasLoc) {
     const d = document.createElementNS(NS, 'circle');
     d.setAttribute('class', 'you'); d.setAttribute('cx', sx(0)); d.setAttribute('cy', sy(0)); d.setAttribute('r', 8);
     gLabels.appendChild(d);
   }
 }
+const CARD = ['north', 'northeast', 'east', 'southeast', 'south', 'southwest', 'west', 'northwest'];
 function updateMapInfo() {
   const box = $('mapInfo');
+  const mk = state.selMark && markPts.find(q => q.m.pid === state.selMark);
+  $('miList').classList.toggle('hidden', !!mk);
+  if (!mk) $('miExtra').classList.add('hidden');
+  $('miSheet').classList.toggle('hidden', !mk); $('miNav').classList.toggle('hidden', !mk);
+  if (mk) {
+    const m = mk.m, dx = mk.x, dn = -mk.y, d = Math.hypot(dx, dn);
+    const dir = CARD[Math.round(((Math.atan2(dx, dn) * 180 / Math.PI + 360) % 360) / 45) % 8];
+    const far = d < 0.1 * MI ? `${Math.round(d * FT)} ft` : `${(d / MI).toFixed(1)} mi`;
+    $('miTitle').textContent = `NGS mark: ${m.name || m.pid}`;
+    $('miCount').textContent = `${m.pid} · ${far} ${dir} of ${state.center ? 'the map center' : 'you'}`;
+    const bits = [];
+    const tp = (m.monumentType || '').replace(/^[A-Z0-9]+\s*=\s*/, '');
+    if (tp) bits.push(tp.charAt(0) + tp.slice(1).toLowerCase());
+    if (m.condition) {
+      const c = m.condition.charAt(0) + m.condition.slice(1).toLowerCase();
+      const when = m.lastRecovered ? (/^\d{8}$/.test(m.lastRecovered) ? m.lastRecovered.slice(0, 4) : m.lastRecovered) : '';
+      bits.push(when ? `Last recovery ${when}: ${c.toLowerCase()}${m.recoveredBy ? ' (' + m.recoveredBy + ')' : ''}` : 'Condition: ' + c.toLowerCase());
+    } else if (m.lastRecovered && /^\d{4}/.test(m.lastRecovered)) bits.push('Last recovered ' + m.lastRecovered.slice(0, 4));
+    $('miExtra').textContent = bits.join(' · ');
+    $('miExtra').classList.toggle('hidden', !bits.length);
+    $('miSheet').href = `https://www.ngs.noaa.gov/cgi-bin/ds_mark.prl?PidBox=${encodeURIComponent(m.pid)}`;
+    $('miNav').href = `https://www.google.com/maps/dir/?api=1&destination=${m.lat},${m.lon}`;
+    box.classList.remove('hidden'); return;
+  }
   const s = state.selected && D.byKey.get(state.selected);
   if (!s) { box.classList.add('hidden'); return; }
   const n = V.counts.get(s.key) !== undefined ? V.counts.get(s.key) : (D.bySec.get(s.key) || []).filter(sv => passes(sv, state.filters)).length;
@@ -483,12 +680,13 @@ svg.addEventListener('pointermove', e => {
   }
   p.x = e.clientX; p.y = e.clientY;
   applyView();
+  scheduleCommit();
 });
 function endPointer(e) {
   if (!pts.has(e.pointerId)) return;
   pts.delete(e.pointerId);
   if (pts.size === 0 && gest && !gest.multi && gest.moved < 8 && Date.now() - gest.t < 700 && e.type === 'pointerup') mapTap(e.clientX, e.clientY);
-  if (pts.size === 0) gest = null;
+  if (pts.size === 0) { gest = null; scheduleCommit(); }
 }
 svg.addEventListener('pointerup', endPointer);
 svg.addEventListener('pointercancel', endPointer);
@@ -499,6 +697,7 @@ svg.addEventListener('wheel', e => {
   const wx = view.cx + (mx - view.W / 2) / view.s, wy = view.cy + (my - view.H / 2) / view.s;
   view.s = ns; view.cx = wx - (mx - view.W / 2) / ns; view.cy = wy - (my - view.H / 2) / ns;
   applyView();
+  scheduleCommit();
 }, { passive: false });
 
 function mapTap(clientX, clientY) {
@@ -510,9 +709,18 @@ function mapTap(clientX, clientY) {
     setManual(mapRef.lat0 + y / mapRef.ky, mapRef.lon0 + x / mapRef.kx);
     return;
   }
+  if (state.ngs && markPts.length) {
+    const lx = clientX - r.left, ly = clientY - r.top;
+    let best = null, bd = 26;
+    for (const q of markPts) {
+      const d = Math.hypot(view.W / 2 + (q.x - view.cx) * view.s - lx, view.H / 2 + (q.y - view.cy) * view.s - 3 - ly);
+      if (d < bd) { bd = d; best = q; }
+    }
+    if (best) { state.selMark = best.m.pid; state.selected = null; drawLabels(); updateMapInfo(); return; }
+  }
   let hit = null;
   for (const i of V.near) if (inPolys(x, y, i.pp)) { hit = i; break; }
-  state.selected = hit ? hit.s.key : null;
+  state.selected = hit ? hit.s.key : null; state.selMark = null;
   renderMap();
 }
 
@@ -561,7 +769,20 @@ function wire() {
     const b = e.target.closest('[data-multi]'); if (!b) return;
     $('sh' + b.dataset.multi).classList.toggle('hidden');
   };
-  $('recenter').onclick = () => { fitView(); };
+  $('recenter').onclick = () => {
+    if (state.center && state.gps) {
+      state.loc = { lat: state.gps.lat, lon: state.gps.lon, acc: 0, source: 'center' };
+      state.selected = null; state.selMark = null; state.needFit = true; refresh();
+    } else fitView();
+  };
+  for (const r of document.querySelectorAll('input[name=bm]')) r.onchange = () => {
+    state.basemap = r.value; store('slhBase', r.value); $('menu').classList.add('hidden'); applyBasemap();
+  };
+  $('lyNgs').onchange = e => {
+    state.ngs = e.target.checked; store('slhNgs', state.ngs ? '1' : '0'); $('menu').classList.add('hidden');
+    state.selMark = null; if (state.ngs) loadNgs(); refresh();
+  };
+  $('optCenter').onchange = e => { $('menu').classList.add('hidden'); setCenterMode(e.target.checked); };
   $('miClose').onclick = () => { state.selected = null; renderMap(); };
   $('miList').onclick = () => { state.filters.sec = state.selected; state.shown = PAGE; refresh(); setTab('list'); };
   new ResizeObserver(() => { sizeMap(); applyView(); }).observe($('mapWrap'));
@@ -580,11 +801,13 @@ function wire() {
     return;
   }
   state.ready = true;
+  applyBasemap();
+  if (state.ngs) loadNgs();
   const q = new URLSearchParams(location.search);
   const lat = parseFloat(q.get('lat')), lon = parseFloat(q.get('lon'));
   if (isFinite(lat) && isFinite(lon)) { state.mode = 'manual'; state.loc = { lat, lon, acc: 0, source: 'manual' }; state.needFit = true; }
   else { state.needFit = true; startGPS(); }
   const r = parseFloat(q.get('r'));
-  if (isFinite(r)) { state.radiusIdx = Math.max(0, Math.min(40, Math.round(r * 4))); $('radius').value = state.radiusIdx; $('radiusText').textContent = radiusText(state.radiusIdx); $('pinBtn').classList.toggle('on', state.radiusIdx === 0); }
+  if (isFinite(r)) { state.radiusIdx = RADII.reduce((best, v, i) => Math.abs(v - r) < Math.abs(RADII[best] - r) ? i : best, 0); $('radius').value = state.radiusIdx; $('radiusText').textContent = radiusText(state.radiusIdx); $('pinBtn').classList.toggle('on', state.radiusIdx === 0); }
   refresh();
 })();
